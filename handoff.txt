@@ -4,8 +4,6 @@ Project handoff
 
 Planning document, incorporating the reading and scope discussion through 6 November 2026.
 
-Project name and subtitle confirmed by the user: Weft — Learning to organize computation.
-
 Part I — Current work
 
 0. Revised scope (2026-11-06)
@@ -23,7 +21,7 @@ Why this is the right first target:
 What it can and cannot claim:
 - It can improve the cost-performance frontier through better delivered correctness, lower total dollar cost, or lower task latency, while keeping branch management transparent to the user.
 - It cannot exceed the model's ability to judge when to fork and which result to keep. Prompt engineering may plateau; that is a finding, not a failure.
-- It still needs an execution-grounded selection criterion. Without tests or validators, transparent best-of-N is just sampling.
+- Selection needs evidence; tests and validators are the strongest source where they exist, and gathering evidence is part of the swarm's job.
 - It must disclose cost to the operator even while hiding branch management from the user.
 
 Terminology: elastic harness. One name for the capability. An elastic harness is an agent harness that allocates inference-time compute dynamically: it branches the agent's execution — session, tools, environment, and model calls — when an alternative is worth exploring, joins results when evidence arrives, and stops when the budget or the evidence says to. The user sees one request and one result; the harness absorbs the branching. This is the name. "Dynamic branching" describes the mechanism, "transparent best-of-N" describes the benefit for users who know the baseline, and "adaptive inference-time scaling" is the academic umbrella. The distinction from session branching (conversation only) and server-side search (reasoning only) is that the elastic harness branches the execution across both sides. Best-of-N fixes five things — the fork point (at the start), N (constant), the branches (homogeneous samples), their interaction (none), and the decision point (after all N finish); the elastic harness relaxes all five. Prior use of the exact phrase is a small unrelated state-machine harness project; Harness.io is a different domain.
@@ -59,7 +57,7 @@ Today, best-of-N with a day-to-day agent requires explicit orchestration. The us
 What is missing is not the algorithm; best-of-N is well understood. What is missing is the packaging: one request in, internal exploration, selection by execution feedback, and one result out, with the user never managing branches. The transparent version requires:
 - A cheap environment fork, so an attempt does not replay setup.
 - A fork tool the model can see and learn to use, rather than an orchestration the user writes.
-- A selection criterion that is not the model's opinion: tests, validators, or executable checks where available.
+- Evidence for selection: tests, validators, or executable checks where available.
 - Budget control and a visible cost line, because transparency to the user must not mean invisibility of the bill.
 - Cleanup and provenance, so the user gets one workspace and the runtime keeps the loom.
 
@@ -78,17 +76,17 @@ No published controlled result shows that these fork tools improve agent benchma
 
 The accuracy evidence is at the strategy level, not the fork-tool level. EnCompass (NeurIPS 2025) reports an ARC subset rising from 4.3% for a two-step agent to 11.7% with best-of-8 and 16.0% with best-of-36 (GPT-3.5), and a Reflexion agent moving from 35.5% to 36.1% with best-first search at lower cost per task. Best-of-N, self-consistency, Tree of Thoughts, Reflexion, and beam search all have published gains, but they come from sampling and selection, not from forking the workspace.
 
-The fork tool is an efficiency enabler: it can improve accuracy at a fixed budget by making exploration cheaper, and it can improve latency by reusing setup. It is not itself an accuracy method. The gap is a controlled comparison of workspace-fork exploration against replay, serial retry, and fixed-N at matched cost on coding tasks. That comparison is the experiment.
+The fork tool is an efficiency enabler: it can improve accuracy at a fixed budget by making exploration cheaper, and it can improve latency by reusing setup. It is not itself an accuracy method.
 
 3. What a loom means
 
 A branch is a fork of a session and the relevant executable environment. The initial version preserves session and filesystem state, starts a fresh executor, and makes the environment guarantees explicit. VM memory and live-process preservation belong to a later version. A branch normally inherits the session history; a candidate fresh-context mode can omit the parent's reasoning while preserving the task and executable workspace (§5). A detailed child assignment is optional: the child can discover its own useful continuation. Define the snapshot boundary for the chosen backend before selecting models and tasks.
 
-A join incorporates selected artifacts, findings, and context from another branch. Define and implement concrete merge semantics, preserve provenance, and validate the resulting artifact. Arbitrary process memories are not assumed to be automatically mergeable.
+A join incorporates selected artifacts, findings, and context from another branch. Integration happens through agent communication (§6); preserve provenance and validate the resulting artifact. Arbitrary process memories are not assumed to be automatically mergeable.
 
-Every session has identical privileges and capabilities. It may work, fork, message peers, incorporate results, or stop itself. A session does not become a privileged coordinator and cannot unilaterally kill other sessions. The runtime enforces shared resource limits and handles environment lifecycle cleanup.
+Every session has identical privileges and capabilities. It may work, fork, message peers, incorporate results, or stop itself. A session does not become a privileged coordinator (the root differs only in delivering the result to the user) and cannot unilaterally kill other sessions. The runtime enforces shared resource limits and handles environment lifecycle cleanup.
 
-4. Stage 0: prompt-learned organization (candidate low-cost step)
+4. Stage 0: prompt-learned organization
 
 Stage 0 (primary): prompt-only fork/join. Fix a strong tool-enabled model and the runtime; modify the harness system prompt to expose fork/message/end and a compact loom view; search a population of prompts genetically on development tasks. Fitness is delivered correctness minus a cost penalty, on paired tasks, with repeated seeds. Baselines: single session, fixed-N=5, serial retry at matched budget, and the untrained model without the tools. No training. This stage answers whether the interface is usable and whether transparent best-of-N beats the baselines at matched cost. It is the primary deliverable. Reuse the genetic prompt-search discipline from the project-manager document-generation experiment: population rather than one running best, sparse cumulative evaluation, stored evaluations never repeated, held-out cases, and the search cost counted in the budget.
 
@@ -228,7 +226,7 @@ Prior art:
 
 Fit: the message-passing model needs a writable branch directory with a read-only parent view, plus read access to the branch from the parent. It does not need commit-to-parent. simgit gives that for git repos today; BranchFS gives the general filesystem primitive but its lifecycle is commit-oriented; LayerFS gives the substrate but expects commits; Waypoint gives live state but needs root and CRIU. Start by wrapping simgit or BranchFS, expose only fork/discard/read, and let messages carry artifact references. Do not implement merge.
 
-6. Join protocol: message-based integration (working design, not yet staged)
+6. Join protocol: message-based integration
 
 Join is not a merge. A branch that elects to stop emits a summary to its parent and to subscribed peers; recipients decide what to import. Concrete contract:
 
@@ -361,7 +359,7 @@ Do not build the programmatic teacher flow or the full historical checkpointing 
 
 A weak model may branch too often or too rarely at first; the state space explodes and the marginal benefit is small or negative. If elicitation alone does not produce a usable signal, the teacher bootstraps a small seed and elicitation scales from there. This stage uses session and filesystem checkpoints, with the backend chosen through systems research. VM functionality is deferred to a later version.
 
-11. Fork mechanisms (deferred VM design; filesystem MVP in §5)
+11. Fork mechanisms: deferred VM design
 
 The following memory-layer design is a candidate for a later VM backend, not an MVP requirement. Its target is to share read-only physical pages between a child and its immediate parent, where the parent may itself be a COW layer over its own parent. The memory is a tree of layers, not a star of children over one host snapshot: a fork of a fork must see the intermediate branch's changes and share that branch's pages read-only, copying only pages written after that fork.
 
@@ -467,17 +465,14 @@ If the distributed-hardware question is to be kept alive cheaply, record the thr
 
 14. Related work and reading list (2026-11 search)
 
-Fork mechanisms and their evidence are in §5.3 and §2.1; harness messaging is in §7; OMP's copy lifecycle is in §7.1. This section records the best-of-N, verifier, and parallel-agent landscape, plus the reading order.
+Fork mechanisms and their evidence are in §5.3 and §2.1; harness messaging is in §7; OMP's copy lifecycle is in §7.1. This section records the best-of-N, verifier, and parallel-agent landscape; the reading order is in §15.2.
 
 Landscape:
 - omp-best-of (wolfiesch, MIT). OMP extension: /best-of --n 2-8, isolated CoW workspaces, LLM-as-a-Verifier ranking, winner-only patch application. Closest prior art. Fixed N, user-invoked, no mid-task fork, no peer messaging. Its bench/RESULTS.md is the cautionary tale: saturated pools, a verifier picking the failing candidate, and three evaluations tripling cost with no accuracy gain.
 - LLM-as-a-Verifier (Kwok et al., arXiv 2607.05391, 3.3k stars). Continuous scores from scoring-token logprob distributions, probabilistic pivot tournament; Terminal-Bench V2 86.5%, SWE-Bench Verified 78.2%. Selection method only; no harness, fork, or policy.
 - dsh-llm-as-a-verifier. The same verifier exposed as DeepSeek Harness tools: verify_compare, verify_select, verify_track.
 - smolvm (smol-machines, Apache-2.0, 7k stars). Branchable microVMs: live CoW branches with processes, memory and disk, recursive sharing, disk-chain compaction, warm pools. Best full-session fork primitive; deferred backend.
-- BranchFS / BranchContext (arXiv 2602.08199). FUSE CoW, O(1) branch creation, nested branches, per-branch mount namespaces. Commit/first-wins lifecycle does not match the no-join model.
-- LayerFS (Ephemeral-AI-Lab, MIT, 2.7k stars). Ephemeral workspaces over shared committed history, recursive branches, content-addressed dedup, instant bootstrap. Commit/merge oriented.
-- simgit (MIT). CoW git worktrees via reflink or fuse-overlayfs; ephemeral GC. Git-only, no process state.
-- Waypoint (Apache-2.0). CRIU plus OverlayFS branchable agent containers; live files, memory and terminal sessions. Root, Linux, CRIU 4.0+.
+- BranchFS / BranchContext, LayerFS, simgit, and Waypoint: see §5.3.
 - Hail Hydra (MIT). Task-level speculative execution: cheap models draft, the orchestrator verifies or redoes. Task delegation, not session forking.
 - agentbox, uzi, pro-workflow. User-orchestrated parallel coding agents in git worktrees, with inbox or board UIs. The manual version of the product.
 - EnCompass (NeurIPS 2025, arXiv 2512.03571). Search over execution paths; ARC subset 4.3% to 11.7% at best-of-8 and 16.0% at best-of-36; Reflexion 35.5% to 36.1% at lower cost. Closest policy framing.
@@ -486,15 +481,10 @@ Landscape:
 
 Research focus: incorporate executable computer state into the loom and make organization, including selection and delivery, available to prompting and training. The references supply mechanisms and evidence for this work; no priority claim is needed. omp-best-of is a close implementation reference, and its small benchmark illustrates task and selection issues to inspect.
 
-Reading order:
-- Tier 0, before code: OMP hub/task/session docs; omp-best-of README and bench/RESULTS.md; LLM-as-a-Verifier paper and repo; BranchFS paper and repo; simgit and LayerFS; smolvm branching docs.
-- Tier 1, experiment and training: EnCompass; Large Language Monkeys; Snell et al.; Agentless; Reflexion, self-consistency, Tree of Thoughts, LATS; Learning by Distilling Context; STaR and Quiet-STaR; the project's own minimal-sufficient-inference review, plan-doc-eval, and plan-mind §7b.
-- Tier 2, defer until the MVP works: Firecracker, Cloud Hypervisor, CRIU, gVisor, E2B, microsandbox, Waypoint, SnowFlock.
-- Defer entirely for now: Petals, compound AI systems, Mixture-of-Agents, FrugalGPT, AlphaCode/CodeT, distributed training, MoE, hardware.
 
 15. Related work additions and revised reading order (2026-11-06)
 
-This section supplements the references in §14 and supersedes its reading order. The organizing question is §0.1: can copyable agents learn to organize their own computation, including branching, communication, selection, integration, and stopping? The references below supply mechanisms, learning methods, and evidence for that investigation. Establishing novelty is not a planning requirement.
+This section supplements the references in §14 and gives the reading order. The organizing question is §0.1: can copyable agents learn to organize their own computation, including branching, communication, selection, integration, and stopping? The references below supply mechanisms, learning methods, and evidence for that investigation. Establishing novelty is not a planning requirement.
 
 The immediate dependency is systems research: choose a low-cost snapshot mechanism that lets the source continue changing, either directly or through a cheap stable copy that does not disrupt existing operations. That mechanism determines the MVP. Model and task selection follow availability of the new tool. Selection and final delivery remain deliberately open policy questions for the swarm; isolation, accounting, and execution mechanisms should support those decisions without prescribing a fixed coordinator or selector. Branch identity, budget, and environment guarantees should be explicit to each session.
 
@@ -510,7 +500,7 @@ Small-N best-of-N performance is a reasonable initial engineering target, not a 
 
 - CodeMonkeys — Scaling Test-Time Compute for Software Engineering (Ehrlich et al., 2025). Combines serial code-and-test refinement with parallel candidate trajectories, then selects using generated tests and a dedicated selection trajectory. This is useful evidence about how multiple coding attempts become one delivered patch, including the work involved in testing and selection. Read its methods as possible behaviors the swarm can adopt and learn. Its fixed workflow need not become Weft's runtime policy, and its shared upfront work does not create a requirement for a separate setup-cost experiment. [Paper](https://arxiv.org/abs/2501.14723), [implementation](https://github.com/ScalingIntelligence/codemonkeys).
 
-- CodeT — Code Generation with Generated Tests (Chen et al., 2022). Promote from §14's deferred list. Generates tests as well as code candidates and selects using execution agreement. It supplies a concrete way for agents to gather evidence about competing solutions when provided tests are incomplete. Generated tests are still fallible; their value is something to measure against withheld outcomes. For Weft, this suggests a learnable testing and comparison behavior available within the swarm. [Paper](https://arxiv.org/abs/2207.10397), [implementation](https://github.com/microsoft/CodeT).
+- CodeT — Code Generation with Generated Tests (Chen et al., 2022). Generates tests as well as code candidates and selects using execution agreement. It supplies a concrete way for agents to gather evidence about competing solutions when provided tests are incomplete. Generated tests are still fallible; their value is something to measure against withheld outcomes. For Weft, this suggests a learnable testing and comparison behavior available within the swarm. [Paper](https://arxiv.org/abs/2207.10397), [implementation](https://github.com/microsoft/CodeT).
 
 - SWE-Search — Enhancing Software Agents with Monte Carlo Tree Search and Iterative Refinement (Antoniades et al., 2024). Combines repository-level agent execution with MCTS, numerical and qualitative evaluation, and feedback among agent roles. Read for useful exploration and evaluation patterns, along with their costs. It provides a concrete reference for investigating alternatives during execution; adopting its fixed search controller or role decomposition is not a requirement. [Paper](https://arxiv.org/abs/2410.20285).
 
