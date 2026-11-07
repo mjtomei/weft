@@ -119,7 +119,7 @@ There is no separate summarization objective and no automated sufficiency measur
 
 5. MVP: ephemeral btrfs filesystem forks, no explicit join
 
-The MVP is one new primitive — a filesystem fork that accompanies the session fork — plus the existing message passing. The snapshot mechanism is btrfs: a subvolume snapshot gives the child a stable fork-time view while the source keeps operating and changing, and snapshots of snapshots allow arbitrary branching. Overlays and the earlier fork tools (§5.3) do not handle arbitrary branching over a live filesystem as well. VM and live-process functionality are deferred. There is no join operation: a branch sends messages and artifact references, and the recipient imports what it wants. The fork is:
+The MVP is one new primitive — a filesystem fork that accompanies the session fork — plus the existing message passing. The snapshot mechanism is btrfs: a subvolume snapshot gives the child a stable fork-time view while the source keeps operating and changing, and snapshots of snapshots allow arbitrary branching. Overlays and the earlier fork tools (§5.2) do not handle arbitrary branching over a live filesystem as well. VM and live-process functionality are deferred. There is no join operation: a branch sends messages and artifact references, and the recipient imports what it wants. The fork is:
 
 - Session: inherit the transcript by default, with a candidate fresh-context mode below; carry the applicable session state and start a fresh executor.
 - Filesystem: create a branch workspace that is a CoW view of the parent's workspace. The branch can write only inside its own directory; everything inherited from the parent is read-only.
@@ -181,31 +181,11 @@ The runtime owns the seams:
 - External shared state is isolated per branch (per-branch service instances, database snapshots) or surfaced honestly. Transparency applies to the inside of the machine, not the outside world.
 - Infrastructure failures (snapshot, restore, reconnect) are recorded separately and excluded from policy training.
 
-Conformance: every backend declares which guarantees it provides. A worktree backend is a degraded implementation: it can match the transcript and files, but not running processes or ports. Train on a backend whose guarantees match the tasks; do not let the policy learn backend-specific rituals.
+Conformance: every backend declares which guarantees it provides. The btrfs backend is a degraded implementation: it matches the transcript and files, but not running processes or ports. Train on a backend whose guarantees match the tasks; do not let the policy learn backend-specific rituals.
 
-5.2 When a VM fork is not worth it (the worktree backend)
+5.2 Prior art and the write-isolation recipe
 
-For bounded coding tasks, a worktree with explicit state capture was a candidate for the filesystem MVP; btrfs was chosen instead (§5). The worktree recipe remains a fallback:
-
-- Copy the session history; create a git worktree at the current commit; carry uncommitted and ignored state with a stash/diff plus a prepared image, or copy the working tree; start a fresh container or process from the prepared image; run a reconnect hook.
-- Preserves history, tracked files, dirty state (with the copy), dependencies baked into the image, and tool availability. Does not preserve running processes, in-memory state, warm page cache, or external connections.
-- No in-progress disk or network IO exists to drop, because the branch starts a new process. This removes the entire IO-reset problem.
-- The join is a diff or a set of files, which is easier to provenance and validate than an opaque memory image.
-
-A plain git worktree is not sufficient on its own: it does not carry uncommitted changes or ignored files (node_modules, .venv, build outputs), and it shares the object store and refs with the parent. Carry the dirty state explicitly, bake dependencies into the image, and give each worktree a unique branch or detached HEAD.
-
-Escalate only on measurement:
-- Worktree plus fresh container: a candidate for bounded tasks and Stage 0 prompt learning, provided dirty state is captured and the source can keep operating.
-- Overlay or reflink workspace plus fresh container: when dependency install or checkout dominates branch cost; preserves files and caches, still no processes.
-- VM snapshot fork: when live processes, in-memory state, or warm page cache are a large fraction of task time, or when full process and network isolation is required.
-
-Decision rule: measure setup time per branch as a fraction of total branch time. If it is small, use the worktree. If it is large but processes are restartable, use the overlay. If processes carry state the task needs, use the VM. Record which backend produced each branch; the policy should see the guarantee set, because it changes what the model can assume (for example, whether a server is still running).
-
-For the VM path, the IO policy is: quiesce the session at a turn boundary, flush and drain disk writes, drop external network connections, snapshot, restore, then run the reconnect hook. Loopback connections whose both endpoints are inside the guest are captured in the snapshot and survive; the criterion is the VM boundary, not the address family. A Unix socket to a host-mounted path, a host port-forward, vsock, or a connection to a host-run service crosses the boundary and must be re-established. Do not discard dirty disk writes without flushing; drop external network, not disk or in-guest loopback.
-
-5.3 Prior art and the write-isolation recipe
-
-Several projects already implement parts of this fork. Reuse one rather than building a filesystem.
+Several projects already implement parts of this fork. The MVP uses btrfs directly; borrow their isolation and lifecycle design where it fits.
 
 Write isolation (kernel-enforced, no custom filesystem needed):
 - Run the branch process in its own mount namespace. Bind the parent or base read-only; bind only the branch's writable layer or subvolume read-write; make everything else read-only or absent. This is the property BranchFS uses: each agent gets a mount namespace with only its @branch path as the workspace root.
@@ -218,13 +198,13 @@ Write isolation (kernel-enforced, no custom filesystem needed):
 Prior art:
 - BranchFS / BranchContext (multikernel; MIT / Apache-2.0; arXiv 2602.08199, ASPLOS 2026 Agentic OS Workshop). The closest primitive: FUSE copy-on-write filesystem, O(1) branch creation (under 350 microseconds, independent of base size), nested branches, per-branch mount namespace isolation, process groups, no root. It has commit-to-parent, first-commit-wins, sibling invalidation, and a frozen origin, which do not match the message-passing, no-join model; borrow the filesystem and isolation design, not the lifecycle.
 - LayerFS (Ephemeral-AI-Lab; MIT; 2.7k stars). Ephemeral workspaces over shared committed history, recursive branches, content-addressed deduplication, instant bootstrap with dependencies, FUSE plus SQLite. Commit/merge oriented, but a branch is a writable workspace and can be read by others; message passing can replace merge. Heavier than needed for a first MVP.
-- simgit (MIT). Copy-on-write git worktrees via reflink or fuse-overlayfs; an extra worktree costs metadata, not a copy of the tree; ephemeral GC; no daemon. The closest match to the worktree MVP, but git-only and no process state.
+- simgit (MIT). Copy-on-write git worktrees via reflink or fuse-overlayfs; an extra worktree costs metadata, not a copy of the tree; ephemeral GC; no daemon. The closest match to a worktree-based fork, but git-only and no process state.
 - Waypoint (Apache-2.0). Branchable agent containers using CRIU plus OverlayFS: checkpoint a running sandbox (files, memory, live terminal sessions) and fork it into many live copies. The closest match to the full session fork without microVMs; requires root, Linux, and CRIU 4.0+ on aarch64.
 - pVisor (Apache-2.0). Staged workspaces with review/apply/drop and a VM-per-container mode; not a fork, but relevant for isolation and review.
 - Sandlock (Apache-2.0). Landlock plus seccomp process sandbox with a COW working directory, no root, about 5 ms startup. The confinement layer for a fork, not a branching tool.
 - Others: getkern/kern (rootless container runtime for agent tool calls), Trail (operation database for worktrees), Grove (multiple agents on git worktrees).
 
-Fit: the message-passing model needs a writable branch directory with a read-only parent view, plus read access to the branch from the parent. It does not need commit-to-parent. simgit gives that for git repos today; BranchFS gives the general filesystem primitive but its lifecycle is commit-oriented; LayerFS gives the substrate but expects commits; Waypoint gives live state but needs root and CRIU. Start by wrapping simgit or BranchFS, expose only fork/discard/read, and let messages carry artifact references. Do not implement merge.
+Fit: the message-passing model needs a writable branch directory with a read-only parent view, plus read access to the branch from the parent. It does not need commit-to-parent. simgit gives that for git repos today; BranchFS gives the general filesystem primitive but its lifecycle is commit-oriented; LayerFS gives the substrate but expects commits; Waypoint gives live state but needs root and CRIU. Expose only fork/discard/read, and let messages carry artifact references. Do not implement merge.
 
 6. Join protocol: message-based integration
 
@@ -402,6 +382,8 @@ Verification recipe for the layered property (run before committing to a backend
 
 Research for the later VM backend: investigate Cloud Hypervisor, Firecracker, microsandbox, E2B, and smolvm against the conformance recipe above. Verify cross-generation physical-memory sharing separately from filesystem reflinks or shared restores of one snapshot; the mechanism descriptions alone do not establish the stronger property. Instrument fork latency versus dirty MB, fan-out, shared versus private pages, and emission bytes. This research does not gate the filesystem MVP.
 
+For the VM path, the IO policy is: quiesce the session at a turn boundary, flush and drain disk writes, drop external network connections, snapshot, restore, then run the reconnect hook. Loopback connections whose both endpoints are inside the guest are captured in the snapshot and survive; the criterion is the VM boundary, not the address family. A Unix socket to a host-mounted path, a host port-forward, vsock, or a connection to a host-run service crosses the boundary and must be re-established. Do not discard dirty disk writes without flushing; drop external network, not disk or in-guest loopback.
+
 11.1 Scaling to thousands of branches
 
 Fork transparency is what makes a large loom affordable. With it, the marginal cost of a branch is its unique dirty pages plus its vCPU time, not a full environment bootstrap, and the model does not manage setup per branch.
@@ -465,14 +447,14 @@ If the distributed-hardware question is to be kept alive cheaply, record the thr
 
 14. Related work and reading list (2026-11 search)
 
-Fork mechanisms and their evidence are in §5.3 and §2.1; harness messaging is in §7; OMP's copy lifecycle is in §7.1. This section records the best-of-N, verifier, and parallel-agent landscape; the reading order is in §15.2.
+Fork mechanisms and their evidence are in §5.2 and §2.1; harness messaging is in §7; OMP's copy lifecycle is in §7.1. This section records the best-of-N, verifier, and parallel-agent landscape; the reading order is in §15.2.
 
 Landscape:
 - omp-best-of (wolfiesch, MIT). OMP extension: /best-of --n 2-8, isolated CoW workspaces, LLM-as-a-Verifier ranking, winner-only patch application. Closest prior art. Fixed N, user-invoked, no mid-task fork, no peer messaging. Its bench/RESULTS.md is the cautionary tale: saturated pools, a verifier picking the failing candidate, and three evaluations tripling cost with no accuracy gain.
 - LLM-as-a-Verifier (Kwok et al., arXiv 2607.05391, 3.3k stars). Continuous scores from scoring-token logprob distributions, probabilistic pivot tournament; Terminal-Bench V2 86.5%, SWE-Bench Verified 78.2%. Selection method only; no harness, fork, or policy.
 - dsh-llm-as-a-verifier. The same verifier exposed as DeepSeek Harness tools: verify_compare, verify_select, verify_track.
 - smolvm (smol-machines, Apache-2.0, 7k stars). Branchable microVMs: live CoW branches with processes, memory and disk, recursive sharing, disk-chain compaction, warm pools. Best full-session fork primitive; deferred backend.
-- BranchFS / BranchContext, LayerFS, simgit, and Waypoint: see §5.3.
+- BranchFS / BranchContext, LayerFS, simgit, and Waypoint: see §5.2.
 - Hail Hydra (MIT). Task-level speculative execution: cheap models draft, the orchestrator verifies or redoes. Task delegation, not session forking.
 - agentbox, uzi, pro-workflow. User-orchestrated parallel coding agents in git worktrees, with inbox or board UIs. The manual version of the product.
 - EnCompass (NeurIPS 2025, arXiv 2512.03571). Search over execution paths; ARC subset 4.3% to 11.7% at best-of-8 and 16.0% at best-of-36; Reflexion 35.5% to 36.1% at lower cost. Closest policy framing.
@@ -512,7 +494,7 @@ Start with [OMP](https://github.com/can1357/oh-my-pi)'s hub, task-isolation, ses
 
 Inspect [simgit](https://github.com/abendrothj/simgit) and [LayerFS](https://github.com/Ephemeral-AI-Lab/layerfs) for reusable filesystem mechanisms. btrfs is the chosen mechanism (§5); measure it for source-write behavior, interruption, cost, and host compatibility. The MVP preserves session and filesystem state; live-process and VM functionality are deferred to a later version.
 
-Consult Sandlock, pVisor, getkern/kern, and other isolation references in §5.3 as needed for the selected executor. The output of this reading is btrfs's measured costs and guarantees. The VM and process-checkpoint literature moves to step 6.
+Consult Sandlock, pVisor, getkern/kern, and other isolation references in §5.2 as needed for the selected executor. The output of this reading is btrfs's measured costs and guarantees. The VM and process-checkpoint literature moves to step 6.
 
 2. Learned organization — read early to guide the interface.
 
