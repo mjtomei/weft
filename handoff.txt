@@ -32,7 +32,7 @@ Humans have a single continuing existence and cannot trivially copy themselves i
 
 Copying lowers the burden of asking for help. Invoking a specialized subagent or predefined workflow ordinarily asks the agent to recognize both that it needs help and what kind of help to request. A fork can require only the judgment that another continuation could be useful. The copy inherits the situation and can discover what work is needed. A detailed task decomposition or specialist brief is optional. This also preserves information whose importance the parent has not yet recognized and therefore might omit from a delegation brief.
 
-The central contribution sought is a loom that includes the state of the computer itself: the session and the executable workspace branch together. A copy can act on the files, artifacts, and tool results accumulated so far without reconstructing the situation from a description. That continuity is the basis for transparency to the agent and for making organization an ordinary, trainable part of execution. The first version preserves session and filesystem state; VM memory and live-process preservation are deferred. The snapshot mechanism must let the source continue operating and changing while the copy has a stable starting state.
+The central contribution sought is a loom that includes the state of the computer itself: the session and the executable workspace branch together. A copy can act on the files, artifacts, and tool results accumulated so far without reconstructing the situation from a description. That continuity is the basis for transparency to the agent and for making organization an ordinary, trainable part of execution. The first version preserves session and filesystem state; VM memory and live-process preservation are deferred. The snapshot mechanism must let the source continue operating and changing while the copy has a stable starting state; the MVP uses btrfs subvolume snapshots for this (§5).
 
 Copies provide a way to add inference work using the same model and, at a given serving point, the same token prices. A further economic hypothesis is that learned parallel organization can let inference run at a cheaper dollars-per-token operating point while maintaining delivered correctness and end-to-end task latency. Useful concurrency may make efficient batching compatible with the task's latency target, even when individual requests are slower. Selection, communication, and integration are part of that task latency and cost. They do not have to be cheap; they have to be visible, priced, and trainable. This depends on useful parallel work and available serving capacity; copies that merely queue do not provide the benefit.
 
@@ -117,9 +117,9 @@ There is no separate summarization objective and no automated sufficiency measur
 - Write the label for the peer's decision, not only for the human's picker. "Testing retry backoff" is fine for both; "exploring alternative A because the first failed on the boundary case" is better for the peer and still readable in a picker. The runtime keeps the same field and lets the model choose the content.
 - The label is trained by inclusion in successful traces, not by a dedicated loss.
 
-5. MVP: ephemeral CoW filesystem forks, no explicit join
+5. MVP: ephemeral btrfs filesystem forks, no explicit join
 
-The MVP is one new primitive — a filesystem fork that accompanies the session fork — plus the existing message passing. The snapshot mechanism remains to be selected; it must preserve a stable fork-time view while allowing the source to continue operating and changing. VM and live-process functionality are deferred. There is no join operation: a branch sends messages and artifact references, and the recipient imports what it wants. The fork is:
+The MVP is one new primitive — a filesystem fork that accompanies the session fork — plus the existing message passing. The snapshot mechanism is btrfs: a subvolume snapshot gives the child a stable fork-time view while the source keeps operating and changing, and snapshots of snapshots allow arbitrary branching. Overlays and the earlier fork tools (§5.3) do not handle arbitrary branching over a live filesystem as well. VM and live-process functionality are deferred. There is no join operation: a branch sends messages and artifact references, and the recipient imports what it wants. The fork is:
 
 - Session: inherit the transcript by default, with a candidate fresh-context mode below; carry the applicable session state and start a fresh executor.
 - Filesystem: create a branch workspace that is a CoW view of the parent's workspace. The branch can write only inside its own directory; everything inherited from the parent is read-only.
@@ -135,12 +135,12 @@ Both modes fork the same executable workspace for a comparison of context inheri
 Write isolation:
 - Mount namespace: expose a stable fork-time base read-only, then mount the branch's writable layer over it (overlayfs upperdir) or bind the branch subvolume writable. The process cwd is the merged view; writes land only in the branch's upper or subvolume.
 - btrfs: the parent subvolume snapshot is read-only (`btrfs property set <snap> ro true`); the branch gets a writable snapshot. Snapshot of a snapshot gives recursive block-level CoW.
-- overlayfs: lowerdir must be an immutable capture of the parent's fork-time workspace; a read-only view of a still-changing source is insufficient. upperdir is the branch directory, workdir is branch scratch, and the merged mount is the cwd. How to capture that base cheaply without disrupting the source is part of backend selection.
+- overlayfs: lowerdir must be an immutable capture of the parent's fork-time workspace; a read-only view of a still-changing source is insufficient. upperdir is the branch directory, workdir is branch scratch, and the merged mount is the cwd. Capturing that base cheaply without disrupting the source is the difficulty that favors btrfs for the MVP.
 - Access control: run the branch process as a user or namespace that cannot write the parent or base; mount the host project read-only; no shared writable bind mounts. The branch's writable set is exactly its upper or subvolume.
 - External side effects still escape: network, shared services, host-mounted sockets. Isolate network per branch or treat the external state as shared.
 
 CoW level:
-- btrfs subvolume snapshots: share file extents through CoW and support snapshots of snapshots. A candidate if a btrfs volume or loopback image is available; measure snapshot cost and effects on active source operations before selecting it.
+- btrfs subvolume snapshots: share file extents through CoW and support snapshots of snapshots. The MVP mechanism, on a btrfs volume or the loopback image below; measure snapshot cost and effects on active source operations.
 - overlayfs or fuse-overlayfs: file-level copy-up, rootless, fine for source trees, bad for large files or datasets.
 - XFS reflink: block-level, needs XFS.
 
@@ -185,7 +185,7 @@ Conformance: every backend declares which guarantees it provides. A worktree bac
 
 5.2 When a VM fork is not worth it (the worktree backend)
 
-For bounded coding tasks, a worktree with explicit state capture is one candidate for the filesystem MVP. Choose the mechanism through the snapshot research in §15.2:
+For bounded coding tasks, a worktree with explicit state capture was a candidate for the filesystem MVP; btrfs was chosen instead (§5). The worktree recipe remains a fallback:
 
 - Copy the session history; create a git worktree at the current commit; carry uncommitted and ignored state with a stash/diff plus a prepared image, or copy the working tree; start a fresh container or process from the prepared image; run a reconnect hook.
 - Preserves history, tracked files, dirty state (with the copy), dependencies baked into the image, and tool availability. Does not preserve running processes, in-memory state, warm page cache, or external connections.
@@ -246,7 +246,7 @@ Verified:
 - OpenCode: subagents and child sessions; no first-class peer messaging.
 - Codex, Gemini CLI, Cursor, Aider, and the other harnesses in plan-delivery: parent-child delegation or background tasks; no first-class peer messaging verified.
 
-Implication: build the elastic harness on OMP first. It already supplies messaging, filesystem isolation backends (including fuse-overlayfs), fan-out, parking, and artifacts. Add a fork tool that creates the session continuation, snapshots the workspace through the selected mechanism, and registers the child in the hub; the rest is prompt and policy. Claude Code is the alternative if agent teams are preferred, but its environment fork is a worktree, not CoW.
+Implication: build the elastic harness on OMP first. It already supplies messaging, filesystem isolation backends (including fuse-overlayfs), fan-out, parking, and artifacts. Add a fork tool that creates the session continuation, snapshots the workspace as a btrfs subvolume, and registers the child in the hub; the rest is prompt and policy. Claude Code is the alternative if agent teams are preferred, but its environment fork is a worktree, not CoW.
 
 7.1 OMP copy lifecycle and access
 
@@ -357,7 +357,7 @@ At each decision point, the runtime pauses and asks a generic introspection ques
 
 Do not build the programmatic teacher flow or the full historical checkpointing until elicitation results show where it is needed. Elicitation is cheap in storage and expensive only in latency; the teacher is the reverse. Use the teacher later, on the small subset of decisions elicitation gets wrong, with checkpoints retained only for that subset.
 
-A weak model may branch too often or too rarely at first; the state space explodes and the marginal benefit is small or negative. If elicitation alone does not produce a usable signal, the teacher bootstraps a small seed and elicitation scales from there. This stage uses session and filesystem checkpoints, with the backend chosen through systems research. VM functionality is deferred to a later version.
+A weak model may branch too often or too rarely at first; the state space explodes and the marginal benefit is small or negative. If elicitation alone does not produce a usable signal, the teacher bootstraps a small seed and elicitation scales from there. This stage uses session and filesystem checkpoints, with btrfs snapshots as the filesystem backend. VM functionality is deferred to a later version.
 
 11. Fork mechanisms: deferred VM design
 
@@ -486,7 +486,7 @@ Research focus: incorporate executable computer state into the loom and make org
 
 This section supplements the references in §14 and gives the reading order. The organizing question is §0.1: can copyable agents learn to organize their own computation, including branching, communication, selection, integration, and stopping? The references below supply mechanisms, learning methods, and evidence for that investigation. Establishing novelty is not a planning requirement.
 
-The immediate dependency is systems research: choose a low-cost snapshot mechanism that lets the source continue changing, either directly or through a cheap stable copy that does not disrupt existing operations. That mechanism determines the MVP. Model and task selection follow availability of the new tool. Selection and final delivery remain deliberately open policy questions for the swarm; isolation, accounting, and execution mechanisms should support those decisions without prescribing a fixed coordinator or selector. Branch identity, budget, and environment guarantees should be explicit to each session.
+The immediate dependency is systems work on the chosen snapshot mechanism: btrfs subvolume snapshots, which let the source continue changing while each copy keeps a stable starting state (§5). Model and task selection follow availability of the new tool. Selection and final delivery remain deliberately open policy questions for the swarm; isolation, accounting, and execution mechanisms should support those decisions without prescribing a fixed coordinator or selector. Branch identity, budget, and environment guarantees should be explicit to each session.
 
 Small-N best-of-N performance is a reasonable initial engineering target, not a guaranteed lower bound. Fixed-policy results are useful references, but exhaustive comparisons and a separate setup-sharing experiment are not prerequisites. Prompt-only work is the first experiment; failure to elicit useful organization does not gate the training track.
 
@@ -510,9 +510,9 @@ Small-N best-of-N performance is a reasonable initial engineering target, not a 
 
 Start with [OMP](https://github.com/can1357/oh-my-pi)'s hub, task-isolation, session-fork, and lifecycle documentation, alongside the gap recorded in §7.1. Then read [BranchFS / BranchContext](https://arxiv.org/abs/2602.08199), the [Btrfs subvolume documentation](https://btrfs.readthedocs.io/en/latest/Subvolumes.html), and the [OverlayFS documentation](https://docs.kernel.org/filesystems/overlayfs.html). The specific question is how to retain a stable fork-time view while the source keeps operating and writing. A read-only mount of a changing source is not sufficient: OverlayFS documents changes to underlying filesystems while mounted as undefined behavior.
 
-Inspect [simgit](https://github.com/abendrothj/simgit) and [LayerFS](https://github.com/Ephemeral-AI-Lab/layerfs) for reusable filesystem mechanisms. Choose the initial snapshot mechanism by source-write behavior, interruption, cost, and host compatibility. The MVP preserves session and filesystem state; live-process and VM functionality are deferred to a later version.
+Inspect [simgit](https://github.com/abendrothj/simgit) and [LayerFS](https://github.com/Ephemeral-AI-Lab/layerfs) for reusable filesystem mechanisms. btrfs is the chosen mechanism (§5); measure it for source-write behavior, interruption, cost, and host compatibility. The MVP preserves session and filesystem state; live-process and VM functionality are deferred to a later version.
 
-Consult Sandlock, pVisor, getkern/kern, and other isolation references in §5.3 as needed for the selected executor. The output of this reading is a measured filesystem mechanism choice and its guarantees. The VM and process-checkpoint literature moves to step 6.
+Consult Sandlock, pVisor, getkern/kern, and other isolation references in §5.3 as needed for the selected executor. The output of this reading is btrfs's measured costs and guarantees. The VM and process-checkpoint literature moves to step 6.
 
 2. Learned organization — read early to guide the interface.
 
