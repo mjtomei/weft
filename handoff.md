@@ -1,8 +1,8 @@
-Weft — Forking the computer
+# Weft — Forking the computer
 
 Project handoff
 
-Part I — Introduction: copies are the native affordance
+## Part I — Introduction: copies are the native affordance
 
 Humans have a single continuing existence and cannot trivially copy themselves into simultaneous continuations. That pattern casts a shadow over how we design agents. A digital agent, by contrast, can copy their working state and pursue several continuations at once. The resulting tree of existences is beyond human comprehension, much like the models themselves. But much existing work forebodes much better performance and lower cost. Best-of-N evaluations show increased performance, and fork-summarize-and-join models decrease cost, but these systems are overly constrained by a desire for control and full understanding. No work has delivered a fully transparent and trainable loom for arbitrary graphs of machine states. This project takes the bitter lesson instead: learn the organization of the tree rather than prescribe it.
 
@@ -18,7 +18,7 @@ And the trainability extends to follow-up architectures likely to increase model
 
 The bitter lesson bears on hardware as well. The most capable models are being built to target hardware that is extremely expensive and not widely available: large nodes with tight interconnects. If scaling is the priority, the target cannot be one machine scaled up indefinitely. It has to be models small enough to run on devices that are distributed geographically and in every other way devices can be distributed, which means consumer-level hardware in very large swarms. The same argument was made in systems research when large shared-memory multiprocessors were the frontier: on economics alone, clusters of commodity machines won, and high-performance computing then built its supercomputers from commodity parts (§14.6). Note that none of this implies that the collapse in the cost of programming leaves consumer hardware untouched: the shape of that compute is likely to change now that humans are not the ones programming it (§13).
 
-1. The product gap: best-of-N is not a primitive
+### 1. The product gap: best-of-N is not a primitive
 
 Best-of-N supplies the motivation for expecting a small initial learning signal: where additional attempts help, there should be useful organization to capture. The first engineering target is to obtain the benefit of multiple attempts while spending less than a naive fixed-N implementation; savings could come from sharing work before forks, exploring only meaningful alternatives, reusing discoveries, and stopping unproductive work. The empirical question is how far learning can extend that benefit. Begin with ordinary tasks that benefit from multiple attempts; specially constructed decomposition tasks are not a prerequisite. The main result is the cost-performance Pareto frontier, including dollar cost and task latency, with outcome-labeled traces available for further learning.
 
@@ -39,7 +39,7 @@ This is the product thesis, and it is distinct from "a smarter model": the same 
 
 User-visible capability is a property of the system, not the weights. A transparent runtime that explores internally is indistinguishable, at the interface, from a smarter model: same request, same output shape, better answer. That is the intended product claim. The scientific claim is separate: the weights are unchanged, and any gain comes from organization at matched or lower cost. Keep the two claims distinct so neither borrows the other's evidence. The product claim is only honest if the interface really is unchanged and the cost is disclosed to the operator, even when it is hidden from the user.
 
-1.1 Evidence status
+#### 1.1 Evidence status
 
 Most workspace-fork tools report only systems metrics, with one recent exception that pairs container/process checkpointing with an external search controller:
 - BranchFS: 292-317 microseconds branch creation, 317 microseconds to 2.1 ms commit, 1.66 GB/s FUSE read (7.24 GB/s with passthrough). No task accuracy.
@@ -52,7 +52,7 @@ The rest of the accuracy evidence is at the strategy level, without workspace fo
 
 The fork tool is an efficiency and state-continuity enabler: it can improve accuracy at a fixed budget by making exploration over live machine state cheaper, and it can improve latency by reusing setup. Putting that primitive inside the swarm's own action space is what remains to test.
 
-2. Terminology: the elastic harness and the loom
+### 2. Terminology: the elastic harness and the loom
 
 An elastic harness is an agent harness that allocates inference-time compute dynamically: it branches the agent's execution — session, tools, environment, and model calls — when an alternative is worth exploring, joins results when evidence arrives, and stops when the budget or the evidence says to. The user sees one request and one result; the harness absorbs the branching. This is the name. "Dynamic branching" describes the mechanism, "transparent best-of-N" describes the benefit for users who know the baseline, and "adaptive inference-time scaling" is the academic umbrella. The distinction from session branching (conversation only) and server-side search (reasoning only) is that the elastic harness branches the execution across both sides. Best-of-N fixes five things — the fork point (at the start), N (constant), the branches (homogeneous samples), their interaction (none), and the decision point (after all N finish); the elastic harness relaxes all five. Prior use of the exact phrase is a small unrelated state-machine harness project; Harness.io is a different domain.
 
@@ -62,11 +62,11 @@ A join incorporates selected artifacts, findings, and context from another branc
 
 Every session has identical privileges and capabilities. They may work, fork, message peers, incorporate results, or stop themselves. A session does not become a privileged coordinator (the root differs only in delivering the result to the user) and cannot unilaterally kill other sessions. When the base session finishes a turn, they return to the user as normal; the interface indicates when forks are still working and keeps them accessible, and subsequent peer messages may arrive at the base session later. Having checked the other sessions before returning, the base session can report their status naturally without special waiting code. The runtime enforces shared resource limits and handles environment lifecycle cleanup.
 
-Part II — Within modest compute: prompts, adapters, small models, and the fork backends
+## Part II — Within modest compute: prompts, adapters, small models, and the fork backends
 
 Implementation detail that matters only to whoever builds the system (the btrfs recipe and its host verification, harness internals, the VM conformance recipe, cost estimates) is in implementation-notes.txt. This part keeps the design and the experiments.
 
-3. Stage 0: prompt-learned organization
+### 3. Stage 0: prompt-learned organization
 
 Stage 0 is prompt-only fork/join and the primary deliverable. Fix a strong tool-enabled model and the runtime; modify the harness system prompt to expose fork/message/end and a compact loom view; search a population of prompts genetically on development tasks. Fitness is delivered correctness minus a cost penalty, on paired tasks, with repeated seeds and held-out evaluation. Baselines: single session, fixed-N=5, serial retry at matched budget, and the untrained model without the tools. No training. The stage answers whether the interface is usable and whether transparent best-of-N beats the baselines at matched cost. Prompt-only organization cannot exceed the model's ability to judge when to fork and which result to keep; a plateau is a finding, not a failure. The prompt search keeps a population rather than one running best, evaluates sparsely and cumulatively, never repeats a stored evaluation, holds out cases, and counts the search cost in the budget.
 
@@ -75,13 +75,13 @@ Stage 0 is prompt-only fork/join and the primary deliverable. Fix a strong tool-
 - Run a capability gradient: strong model prompt-learned, then a mid-size open model (7B-32B, local) prompt-learned, then distill to the 0.5B-3B student. This separates "the interface is learnable" from "a tiny model can execute it."
 - Teacher-checkpoint intervention is a separate deferred mechanism (§9.4): sample K interventions from one checkpoint, execute each in a fork, select by outcome.
 
-3.1 Loom observation for the fork decision
+#### 3.1 Loom observation for the fork decision
 
 The deciding session needs a compact observation, not the full loom: branch ids, goals, status, last emission as a short string, per-branch cost in tokens, wall clock and disk, remaining budget, depth, and the marginal cost of one more fork. Without cost there is no value-of-computation decision; without the summary the model cannot see what is already being tried.
 
-Any branch's full trace is readable on demand (history://<branch> or an equivalent tool). Inspection is an ordinary tool call in the trace, not an elicitation prompt, and the cost term rewards fewer of them, so the model learns both to infer the loom from summaries and to ask for a trace when the summaries are insufficient. Use emissions, not transcripts, and keep the observation small enough for a 0.5B-3B student.
+Any branch's full trace is readable on demand (`history://<branch>` or an equivalent tool). Inspection is an ordinary tool call in the trace, not an elicitation prompt, and the cost term rewards fewer of them, so the model learns both to infer the loom from summaries and to ask for a trace when the summaries are insufficient. Use emissions, not transcripts, and keep the observation small enough for a 0.5B-3B student.
 
-3.2 The existing session label as a peer-facing summary
+#### 3.2 The existing session label as a peer-facing summary
 
 The summary already exists: the few-word description a session generates for a picker or status bar, derived from their task or current activity. It is not trained today. Putting it in the loom observation makes it the peer's default view of what a branch is doing, so it becomes load-bearing and therefore trainable as a communication channel.
 
@@ -91,7 +91,7 @@ There is no separate summarization objective and no sufficiency measure. The lab
 - Keep inspection available but do not score the label against it; inspection is learned from the same outcome and cost signal.
 - Write the label for the peer's decision, not only the human's picker: "Testing retry backoff" serves both; "exploring alternative A because the first failed on the boundary case" serves the peer better and still reads in a picker. The runtime keeps the same field and lets the model choose the content.
 
-4. MVP: ephemeral btrfs filesystem forks, no explicit join
+### 4. MVP: ephemeral btrfs filesystem forks, no explicit join
 
 The MVP is one new primitive, a filesystem fork that accompanies the session fork, plus the existing message passing. The snapshot mechanism is btrfs: a subvolume snapshot gives the child a stable fork-time view while the source keeps operating and changing, and snapshots of snapshots allow arbitrary branching. VM and live-process functionality are deferred (§11). There is no join operation: a branch sends messages and artifact references, and the recipient imports what they want.
 
@@ -110,7 +110,7 @@ The requirement that selects btrfs is branching while the source keeps working: 
 
 Write isolation is kernel-enforced and needs no custom filesystem. The branch process runs in its own mount and user namespaces with the branch subvolume bound read-write at the canonical workspace path, so `cwd`, virtualenvs, build caches, and absolute paths in the inherited transcript stay valid; everything else is read-only or absent, and a global read-only mapping of all loom directories lets peers inspect each other's files. External side effects (network, shared services, host-mounted sockets) still escape and are isolated per branch or treated as shared state. Live processes, in-memory state, and the warm page cache do not fork on this backend; a service manifest restarts declared services. The isolation recipe, the loopback-image setup, garbage collection, and the test list are in the implementation notes (§1).
 
-4.1 Fork transparency and explicit branch identity
+#### 4.1 Fork transparency and explicit branch identity
 
 Fork transparency means inherited executable state is ready to use within the backend's declared guarantees. The child receives their branch identity, context mode, remaining budget, and environment guarantees automatically, and may have an open-ended purpose. To preserve KV-cache reuse, the system prompt and all pre-fork transcript tokens stay byte-identical between parent and child: identity, mode, budget, and any dirty-tree notice enter only in the appended `fork` tool result at the tail of the shared prefix. The runtime defines where the copied transcript resumes and which fork result the child sees; provenance stays in the runtime log, with loom_status() for detail on demand.
 
@@ -118,7 +118,7 @@ The payoff is a small action space (fork, message, end, with no setup ritual to 
 
 Every backend declares the guarantees it provides. The btrfs backend matches the transcript and files but not running processes or ports; the seams a VM backend must own are in §11. Train on a backend whose guarantees match the tasks, so the policy does not learn backend-specific rituals. Infrastructure failures (snapshot, restore, reconnect) are recorded separately and excluded from policy training.
 
-5. Join protocol: message-based integration
+### 5. Join protocol: message-based integration
 
 Join is not a merge. A branch that stops emits a summary to the parent and subscribed peers; recipients decide what to import.
 
@@ -130,7 +130,7 @@ Join is not a merge. A branch that stops emits a summary to the parent and subsc
 
 The summary is the message, artifacts are pulled by reference, validation is the acceptance test, and every join decision is a typed tool call that can be prompted and trained.
 
-6. Harness support for message passing
+### 6. Harness support for message passing
 
 - OMP: first-class peer messaging through a hub (send, wait, inbox, broadcast, await). Subagents are addressable peers, parked agents revive on a direct send, and messages arrive as non-interrupting asides while running and start a turn when idle. Task subagents already have filesystem isolation (btrfs among the backends), batch fan-out, parking, and artifact references. The gap: /fork copies the session but not the filesystem, and task(isolated) isolates the filesystem but starts a fresh context and is torn down at completion. OMP's isolated branches are not revivable and its revivable branches are not isolated; the combined session-plus-environment fork is the missing primitive.
 - Claude Code: agent teams with per-agent mailboxes and direct teammate messaging, including across machines. The Agent tool may already combine a forked conversation with an isolated worktree, which is worth verifying, but a worktree is a clean checkout of HEAD, not a CoW fork: it drops uncommitted edits, untracked files, and the build and environment state accumulated before a mid-task fork.
@@ -138,7 +138,7 @@ The summary is the message, artifacts are pulled by reference, validation is the
 
 Build on OMP first. Add a fork tool that creates the session continuation, snapshots the workspace as a btrfs subvolume, registers the child in the hub as a revivable peer, retains the branch workspace, and GCs on end or space pressure according to the backend's dependencies; the rest is prompt and policy. OMP's current copy lifecycles and access rules are in the implementation notes (§2).
 
-7. Baselines, targets, and interpretation
+### 7. Baselines, targets, and interpretation
 
 For fixed N, begin with five independent attempts. Record both whether any candidate passes the evaluator (pass-at-five) and the correctness of the one answer an implementable model-and-tools selection procedure delivers. Selection procedures get only the evidence available during execution; held-out evaluator results remain evaluation evidence.
 
@@ -150,7 +150,7 @@ Measure delivered correctness, total cost, and elapsed time over several budgets
 
 Dollar cost is a primary axis, and the most interesting outcome is equal delivered correctness and task latency while serving inference at a lower dollars-per-token point. Report total dollars per delivered result alongside input/output token counts, cache usage, effective token prices, environment cost, and selection/communication/integration work; lower token prices and lower task cost are separate measurements, and additional tokens belong in the latter. For local serving, state the hardware-cost basis and measure utilization and queueing. Model and task selection start once the tool exists, on ordinary tasks with a best-of-N benefit rather than a curated set of decomposition opportunities.
 
-8. Plan of work and deliverables
+### 8. Plan of work and deliverables
 
 The work runs as parallel tracks; the btrfs fork tool is the shared dependency.
 
@@ -163,7 +163,7 @@ The work runs as parallel tracks; the btrfs fork tool is the shared dependency.
 
 Primary deliverables: the modified harness system prompt, the fork/message/end tool schema, the runtime, the fork backend, and the Stage 0 results (delivered correctness, cost, and latency against single-session, fixed-N, and serial-retry baselines, with the prompt-search record and cost accounting). Also deliver the reproducible runtime and configurations, recorded looms, held-out evaluation results, failure diagnoses, and complete cost accounting; if the training track is pursued, selected training examples, student checkpoints, validated perturbation generators, and paired task manifests. Preserve enough records for a frontier-model session to inspect the loom conversationally and help a human identify targeted interventions; a bespoke observability interface is not a prerequisite.
 
-9. Training track
+### 9. Training track
 
 The training track (Stage A onward) is informed by Stage 0 but does not wait on it. One training task family first: coding, with multiple task instances and separate training, development, and held-out evaluation splits; multi-task training is a possible later step. The initial experiment uses full student fine-tuning; adapters are the first weight-differentiated specialization targets (§12.1), and the Jev-assisted variant (§10) is a separate no-training comparison. Establish tool-enabled coding baselines first on a 0.5B–3B student, on executable coding and repair tasks with reliable outcome checks, starting with bounded tasks and expanding to repository work; candidate students and task suites are in the implementation notes (§3).
 
@@ -179,13 +179,13 @@ Evaluate trained students on held-out tasks without DeepSeek or other extra deci
 
 Model size is an experimental variable. A student barely able to write code may be unable to recognize when to fork, evaluate other branches, or integrate results; a negative result on a tiny student leads to diagnosis and larger students within separately established budgets, not to rejecting the architecture.
 
-9.1 Training baselines and controls
+#### 9.1 Training baselines and controls
 
 Measure an untrained single session, the untrained student with the loom primitives, a fixed-N implementation, and the trained adaptive loom, on the same task starts with comparable tools and budgets. Teacher-assisted execution is a separate diagnostic condition.
 
 The training controls form a two-by-two: DeepSeek-generated ordinary traces; DeepSeek-guided loom traces; same-model ordinary traces; same-model loom traces. Start each run from the identical student checkpoint, match training tokens, update budgets, task distributions, and evaluation resources, and disclose remaining differences. Ordinary DeepSeek outputs on training tasks are a real baseline, so a gain over the untouched student alone is not attributed to loom training. Account separately for trace-generation, search, filtering, and selection costs, and use a matched generation-budget comparison to check whether gains come from more compute or more selected data. The same-model serial versus same-model loom comparison isolates organization from stronger-teacher transfer. Stage the four conditions within the budget rather than launching all of them before the pipeline works.
 
-9.2 Generalization and curriculum
+#### 9.2 Generalization and curriculum
 
 Train on the single coding family and measure held-out coding performance; then evaluate the frozen checkpoint on unseen task families without further training, against the same untrained and plain-fine-tuned controls. Candidate transfer settings: tool-based data analysis, environment troubleshooting, and evidence-gathering tasks with verifiable outcomes, keeping the fork/join interface fixed while task content and, later, tool sets and horizons vary. Report absolute performance and improvement over the controls; a model with no competence in a transfer task gives an inconclusive result. Transfer across several settings would support reusable organization behavior without establishing universal planning competence.
 
@@ -193,11 +193,11 @@ Task perturbations test whether trained behavior depends on benchmark wording or
 
 If single-family training does not transfer, test a curriculum of a few task families, keeping some families entirely out of training and the transfer-development tasks separate from final evaluations, and account for the added budget. Multi-task training is not a prerequisite for the first trial.
 
-9.3 Resources and estimates
+#### 9.3 Resources and estimates
 
 Stage 0 costs inference and runtime only. The $1,000 ceiling applies to the full trial if the training track is pursued, including teacher calls, rentals, storage, environments, training, and evaluation; the prompt-only stage should cost far less. Full fine-tuning runs on the existing Spark, with two consumer GPUs as possible student-inference workers; renting a larger node is an option only if a larger-student experiment is justified. Reserve resources for matched controls and evaluation rather than one trained condition. Data-volume and model-size estimates stay speculative until the first local run measures real session contexts and throughput; the costing placeholder and the measurements that replace it are in the implementation notes (§3).
 
-9.4 Elicitation and the teacher as labelers
+#### 9.4 Elicitation and the teacher as labelers
 
 Elicitation is the teacher-free labeler. At each decision point the runtime pauses and asks a generic introspection question: reasons a session might branch (uncertainty about the approach, several plausible strategies, independent subproblems, a result that is expensive to verify, remaining budget) and reasons not to (the marginal branch is unlikely to pay for itself, the evidence is already sufficient, the budget is nearly spent); do you want to branch, and why? The model answers in the trace and, on yes, forks from the current state.
 
@@ -210,11 +210,11 @@ The teacher is retrospective: they inspect the trace afterward and insert at a p
 
 Use the teacher to seed a small set of good decisions and elicitation to scale the data. Do not run the teacher over the full loom, and do not build the programmatic teacher flow or full historical checkpointing until elicitation results show where they are needed; then retain checkpoints only for the decisions elicitation gets wrong. A weak model may branch too often or too rarely at first; if elicitation alone yields no usable signal, the teacher seeds and elicitation scales from there.
 
-10. Jev-assisted organization without training
+### 10. Jev-assisted organization without training
 
 Keep a Jev-assisted variant as a distinct experiment. Each session can consult the same classifier about concrete available fork/join actions: the session or surrounding software supplies candidate actions and parameters, Jev selects or scores them, and the runtime records an explicit continuation in the trace, performs the action, and resumes. This tests whether a general-purpose decision model provides useful organization without student training; Jev is not a privileged manager. Compare the variant with the untrained and trained students, counting classifier input processing and all branch work. If it works, a learned or distilled decision policy becomes a possible cost optimization.
 
-11. Fork mechanisms: deferred VM design
+### 11. Fork mechanisms: deferred VM design
 
 The VM backend extends fork transparency (§4.1) to running processes. It is a candidate for a later version, not an MVP requirement, and this research does not gate the filesystem MVP. Its defining property is a tree of layers rather than a star of children over one host snapshot: a child shares read-only physical pages with their immediate parent, where the parent may itself be a copy-on-write layer over their own parent, so a fork of a fork sees the intermediate branch's changes and copies only the pages written after that fork. Guest page tables are ordinary guest memory and layer like any other page; the disk uses the same layered structure. Reads walk the chain, so depth is bounded and chains are compacted offline.
 
@@ -222,13 +222,13 @@ Containers do not provide this. CRIU, gVisor, and the Kubernetes checkpoint API 
 
 For running processes the runtime owns the seams the filesystem backend never meets: quiescing at a turn boundary and flushing disk before capture; connections, where loopback inside the guest survives and anything crossing the VM boundary is re-established per branch behind a reconnect proxy; a stable hostname, cwd, environment, and process tree; reseeded randomness and a defined clock policy; and external shared state, isolated per branch or surfaced honestly. Transparency applies inside the machine, not to the outside world. Capture, not restore, dominates fork cost, so forks start from a clean checkpoint at a tool boundary; budgets count shared pages once; snapshots hold all memory, including secrets; forks stay on the parent's host and only emissions cross machines; and model inference stays outside the forked session because GPU state does not fork cleanly.
 
-11.1 Scaling to thousands of branches (deferred VM backend)
+#### 11.1 Scaling to thousands of branches (deferred VM backend)
 
 The btrfs MVP scales by subvolume count and snapshot depth; its limits are metadata and shared-extent reference counts, not vCPUs or guest memory. On the VM backend a branch's marginal cost is its unique dirty pages plus vCPU time, not an environment bootstrap, which is what makes a large loom affordable. At a thousand branches the limits are unique memory, CPU overcommit, host thread and descriptor limits, snapshot storage, and the pause cost of snapshotting an active parent; thousands fit on one large host only if most branches are small and short-lived, otherwise the loom spans hosts (the cost model and the requirements at that scale are in §14.6). The bottleneck then shifts from fork cost to inference and coordination: a thousand branches pay off only if the policy prunes early, so the value-of-computation decision becomes the main learned skill. Omerta's VM-per-task model becomes fork-per-branch wherever the provider exposes snapshot and restore with shared memory; the Linux KVM path does, and Apple's Virtualization.framework does not.
 
-Part III — Frontier-scale compute and the broader hypothesis
+## Part III — Frontier-scale compute and the broader hypothesis
 
-12. Broader hypothesis
+### 12. Broader hypothesis
 
 The larger bet is that learning to organize branches becomes learning how to investigate a problem. The system can generate alternatives, run experiments to discriminate among them, revise assumptions, exchange evidence, and reconsider which possibilities deserve more computation. A branch can implement a solution or investigate whether the problem itself has been framed correctly.
 
@@ -238,7 +238,7 @@ The computer-architecture analogy is dynamic task parallelism: a session discove
 
 A further hypothesis is that learned organization can let capable systems exploit many modest computers with cheaper interconnects. That requires substantial local work between exchanges and sensible decisions about placement, state transfer, and communication. These are future hypotheses, not established results of the initial experiment. Suchman's work inspired the discussion; the branch-management architecture is our engineering extension.
 
-12.1 Transparent and trainable model specialization
+#### 12.1 Transparent and trainable model specialization
 
 The next step toward frontier performance on distributed hardware is to let forks target different models while one base model controls the root session. Candidate targets may be differentiated by weights (distinct checkpoints or adapters, potentially resident on different machines) or by prompting.
 
@@ -248,13 +248,13 @@ As in the MVP, this remains transparent and trainable rather than relying on pre
 
 The compute ladder matters. Prompt-differentiated targets cost inference only. Adapters are within reach on local hardware and are the first weight-differentiated targets; full fine-tuning of small students (§9) follows. The hope on that ladder is that a specialized swarm of 8B to 32B models reaches near-frontier, or slightly lagging, performance on modest hardware. Performance well beyond the frontier would need the organization policy trained into the frontier model itself. That is frontier-scale compute and outside what this plan can run, and it is why the primitive is designed to be trainable rather than prescribed.
 
-12.2 Follow-ups
+#### 12.2 Follow-ups
 
 Follow-ups attach to the tracks in §8 rather than to one order. On the training track: after Stages A, B, and C and the transfer tests, multi-task training, repeated self-improvement generations, and larger students when small-model results are inconclusive, with adapters and other training-cost optimizations for larger models. On the specialization track: adapters, then weight-differentiated targets specialized from successful branch trajectories, then the frontier-scale question above. On the fork-backend track: the VM backend against the §11 conformance recipe, then learned decision components, distributed placement, and performance across machines with limited interconnects. On Stage 0 itself: harder repository tasks, stronger single-session baselines at matched cost, and longer contexts. The Jev-assisted architecture (§10) runs as its own comparison whenever student checkpoints exist.
 
-Part IV — References
+## Part IV — References
 
-13. Related planning (reference only, not integrated)
+### 13. Related planning (reference only, not integrated)
 
 The following prior planning is the conceptual neighbour of this project. It is recorded here for reference; none of it is a dependency or an input to the staged experiment.
 
@@ -268,11 +268,11 @@ Relationship in one sentence: this project tests session-level organization (for
 
 If the distributed-hardware question is to be kept alive cheaply, record the three proxies the review uses from the first runtime: inter-branch bytes exchanged per delivered result, per-branch context tokens (the repeated-context cost of forking whole sessions), and branch wall-clock span. They are cheap to instrument and are the numbers any later claim about small-machine deployment would need.
 
-14. Related work, by reading step
+### 14. Related work, by reading step
 
 The organizing question is the one in Part I: can copyable agents learn to organize their own computation, including branching, communication, selection, integration, and stopping? The references below supply mechanisms, learning methods, candidate behaviors, and evidence for that investigation. They do not prescribe a coordinator, a selector, or a comparison campaign, and establishing novelty is not a planning requirement. Evidence status for the fork tools is in §1.1; harness messaging and OMP's copy lifecycle are in §6. Entries are grouped by the step at which to read them, in the order listed within each step. Entries marked (abstract only) were read from abstracts, listings, or READMEs rather than full texts.
 
-14.1 Step 1 — snapshot semantics and harness integration (immediate implementation dependency)
+#### 14.1 Step 1 — snapshot semantics and harness integration (immediate implementation dependency)
 
 Start with [OMP](https://github.com/can1357/oh-my-pi)'s hub, task-isolation, session-fork, and lifecycle documentation, alongside the gap recorded in §6. Then read BranchFS / BranchContext below, the [Btrfs subvolume documentation](https://btrfs.readthedocs.io/en/latest/Subvolumes.html), and the [OverlayFS documentation](https://docs.kernel.org/filesystems/overlayfs.html). The specific question is how to retain a stable fork-time view while the source keeps operating and writing. A read-only mount of a changing source is not sufficient: OverlayFS documents changes to underlying filesystems while mounted as undefined behavior. btrfs is the chosen mechanism (§4); measure it for source-write behavior, interruption, cost, and host compatibility. The output of this step is btrfs's measured costs and guarantees; the VM and process-checkpoint literature is step 6.
 
@@ -288,7 +288,7 @@ Start with [OMP](https://github.com/can1357/oh-my-pi)'s hub, task-isolation, ses
 - getkern/kern. Rootless container runtime for agent tool calls; an isolation reference for the selected executor.
 - [mini-SWE-agent](https://github.com/SWE-agent/mini-swe-agent) (SWE-bench team). A minimal companion to SWE-agent: roughly 100 lines of Python implementing a bash-only, linear-history observe-think-act loop with file viewing, editing, and searching. Later versions report above 74% on SWE-bench Verified with no tool hierarchy beyond bash. Not a fork mechanism and not a learned organization policy. Its value here is as a harness-mass control: if a loom built on a heavy scaffold outperforms a single session on the same scaffold, mini-SWE-agent is the cheap check that the gain comes from branching the session and workspace rather than from scaffold bulk. It is also the harness used by the high-throughput parallel attempt in §14.3 (Doubleword), which makes its fixed-N numbers directly comparable to a loom run on the same base loop.
 
-14.2 Step 2 — learned organization (read early to guide the interface)
+#### 14.2 Step 2 — learned organization (read early to guide the interface)
 
 Read AsyncThink, then the two metareasoning papers, then EnCompass. Together they address learned concurrency, the value of additional computation, and separating agent workflow from search over execution paths. Use them to ask which decisions the primitive should leave available to the agents. Follow with the project's minimal-sufficient-inference review and plan-mind §7b (§13) for context inheritance, emissions, and recursive invocation. This conceptual reading can proceed during systems research without delaying the first usable tool.
 
@@ -307,7 +307,7 @@ Read AsyncThink, then the two metareasoning papers, then EnCompass. Together the
 - Scaling Long-Horizon LLM Agent via Context-Folding (Sun et al., 2025). Gives an agent native `branch` and `return(message)` actions to spin off a temporary sub-trajectory for a localized subtask and collapse the intermediate steps into a summary return, trained end to end with FoldGRPO. Reaches 58.0% Pass@1 on SWE-Bench Verified and 62.0% on BrowseComp-Plus at one-tenth the active context budget of ReAct (32K versus 327K). The single-stream analogue of using Weft's `fork` and `end(summary, artifacts)` for optional dynamic task-based compaction — with the advantage in Weft that delegating noisy exploration to a child fork keeps both transcripts strictly append-only and preserves KV-cache prefixes. [Paper](https://arxiv.org/abs/2510.11967).
 - Recursive Language Models (Zhang, Kraska, and Khattab, 2025). Keeps working state and sub-call outputs in the external execution environment rather than concatenating sub-agent transcripts into the root context, with the model invoking recursive LLM sub-calls and pulling only targeted slices into context. Post-training an 8B model (`RLM-Qwen3-8B`) for this recursive interface yields a 28.3% average gain on long-horizon tasks. Supports pull-by-reference integration (§3.1, §5) and small-student post-training for recursive organization (§9). [Paper](https://arxiv.org/abs/2512.24601).
 
-14.3 Step 3 — evidence gathering, selection, models, tasks, and budgets (once the tool is available)
+#### 14.3 Step 3 — evidence gathering, selection, models, tasks, and budgets (once the tool is available)
 
 Read CodeMonkeys, CodeT, omp-best-of and its measured results, then LLM-as-a-Verifier, and inspect dsh-llm-as-a-verifier if its tool interface is useful. These readings inform what evidence the swarm can obtain and how it can decide among results; they do not assign the final decision to an external controller. Treat the small omp-best-of experiments as diagnostic examples, not a general accuracy estimate. Follow with Large Language Monkeys, Snell et al., and Agentless for sampling, compute allocation, and coding-task practice when choosing the first models, tasks, and budgets. Ordinary tasks that benefit from best-of-N provide the starting point; a special task-design campaign is not required.
 
@@ -338,7 +338,7 @@ Serving economics for the $/token operating point in Part I and §7:
 - Autellix (Luo et al., 2025). Schedules an agent's LLM calls as one program using program-level statistics. It reports 4–15× higher program throughput than vLLM and SGLang at the same latency. The scheduling counterpart of the Part I hypothesis: run a loom's calls at an efficient batching point while holding task latency. [Paper](https://arxiv.org/abs/2502.13965).
 - Unlocking parallel test-time scaling for long-horizon agents (Bhat, Doubleword, 2026). Ran 64 concurrent mini-swe-agent instances on DeepSeek-V4-Pro against all 731 public SWE-bench Pro problems on one 8×B300 node: 46,784 attempts in 24 hours, at about $0.05 each. A single attempt averaged 51.2%. Accepting any of the 64 reached 70.7%, which is an oracle bound rather than a selected result. A measured dollars-per-attempt reference for a throughput-oriented serving point. (Page partly truncated when read.) [Post](https://blog.doubleword.ai/swe-bench-pro-64-deepseek-agents).
 
-14.4 Step 4 — prompt learning and behaviors the swarm can discover
+#### 14.4 Step 4 — prompt learning and behaviors the swarm can discover
 
 Read GEPA and the project's plan-doc-eval before building the prompt-search loop. Give the optimizer complete outcome and cost records, including the swarm's own verification, communication, and integration work; the learning target is the whole organization policy. The rest of this step is a repertoire of revision, sampling, exploration, and evaluation strategies, plus orchestration examples to consult when a concrete interface question arises. These are sources of candidate behavior and implementation ideas; the swarm remains responsible for deciding which behavior to use.
 
@@ -352,7 +352,7 @@ Read GEPA and the project's plan-doc-eval before building the prompt-search loop
 - ACE — Agentic Context Engineering (Zhang et al., 2025). Evolves an agent's instructions as a playbook through incremental, curated updates. This avoids the collapse that comes from repeatedly rewriting a prompt wholesale. Complements GEPA for evolving the swarm's organization instructions across many runs. [Paper](https://arxiv.org/abs/2510.04618).
 - Darwin Gödel Machine (Zhang et al., 2025). Open-ended, archive-based evolution of a coding agent's own harness, evaluated on SWE-bench and Polyglot. A reference for population and archive management in harness search, and for the evidence a later self-improvement claim (§9) would need. [Paper](https://arxiv.org/abs/2505.22954).
 
-14.5 Step 5 — learning from traces and removing scaffolds (when preparing training)
+#### 14.5 Step 5 — learning from traces and removing scaffolds (when preparing training)
 
 Read Learning by Distilling Context, then STaR, and return to AsyncThink's training procedure. They bear on internalizing prompting, learning from generated traces, and training organization itself. Read Quiet-STaR afterward as an adjacent approach to learning useful reasoning. Use the matched teacher-source controls in §9.1 to interpret gains.
 
@@ -361,7 +361,7 @@ Read Learning by Distilling Context, then STaR, and return to AsyncThink's train
 - TraceGraph (Nian et al., 2026). Builds a graph over action-observation states from pooled rollouts, marks "trap" regions, and evaluates continuations from the same prefix. A method for reading the loom record across tasks: where forks paid off, where branches shared a mistaken assumption, and which decisions to select for training. (Abstract only.) [Paper](https://arxiv.org/abs/2605.31308).
 - MAST — Why Do Multi-Agent LLM Systems Fail? (Cemri et al., 2025). A taxonomy of multi-agent failures covering specification, inter-agent misalignment, and verification. A starting vocabulary for the §7 failure diagnoses and for labeling failed looms. [Paper](https://arxiv.org/abs/2503.13657).
 
-14.6 Step 6 — VM state, distributed deployment, and broader architectures (later versions)
+#### 14.6 Step 6 — VM state, distributed deployment, and broader architectures (later versions)
 
 Read [smolvm's branching documentation](https://github.com/smol-machines/smolvm/blob/main/docs/branching.md), [Cloud Hypervisor's snapshot/restore documentation](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/snapshot_restore.md), Firecracker, and Waypoint/CRIU when extending the fork to live-process and memory state. Use gVisor, E2B, microsandbox, and SnowFlock as targeted comparisons. Distinguish shared disk extents from shared resident memory and verify how the source continues after a fork; the conformance recipe is in implementation-notes.txt, the implementation catalog and the scale model are below, and revisiting the catalog is only needed when a chosen backend exposes a concrete limitation. Return to the minimal-sufficient-inference review, Omerta, and SnowFlock when placement, state transfer, or communication becomes a measured constraint. Keep Petals, compound AI systems, Mixture-of-Agents, FrugalGPT, AlphaCode, distributed training, MoE, and hardware scaling as later background.
 
