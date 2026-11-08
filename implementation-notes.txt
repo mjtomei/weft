@@ -1,0 +1,124 @@
+Weft — Implementation notes
+
+Implementation detail behind handoff.txt: what matters to whoever builds the system and not to a reader evaluating the plan. Handoff section numbers are given in parentheses; nothing here changes a decision recorded there.
+
+1. btrfs fork backend (handoff §4)
+
+1.1 Write-isolation recipe
+
+Isolation is kernel-enforced; no custom filesystem is needed.
+
+- btrfs only. The live base is never mounted read-only and never used directly as a branch root. Capture a read-only snapshot, then create the branch as a writable snapshot of the capture: `btrfs subvolume snapshot -r base snap-<id>`, then `btrfs subvolume snapshot snap-<id> branch-<id>`. The base continues changing, the branch's fork-time view stays fixed, and snapshot of a snapshot gives recursive block-level CoW. Where a separate immutable capture is not needed, `btrfs subvolume snapshot base branch-<id>` suffices.
+- Mount namespace: run the branch process in its own mount namespace with the branch subvolume bound read-write at the canonical workspace path, so `cwd`, virtualenvs, build caches, and absolute paths in the inherited transcript stay valid. The parent or base is visible read-only only if it must be; everything else outside the branch is read-only or absent. Maintain a global read-only mapping of all loom directories (for example `/run/weft/branches/<id>`) for cross-branch inspection, and put the originator's loom directory in cross-session message headers so recipients can translate paths and inspect the sender's work. BranchFS gives each agent a mount namespace with only their @branch path as workspace root; borrow the isolation design, not the lifecycle.
+- User namespace and a distinct UID so the branch cannot write parent-owned paths even if a mount is misconfigured. Mount the host project read-only; no shared writable bind mounts. The branch's writable set is exactly its subvolume.
+- Landlock and seccomp (for example sandlock) as defense in depth.
+- Per-branch /tmp, /dev/shm, and cache directories; never share a writable bind mount. Host mounts are external state and are not forked.
+- External side effects still escape: network, shared services, host-mounted sockets. Isolate network per branch or treat external state as shared.
+- Local tools: bwrap, unshare, newuidmap; no root for the user-namespace path. fuse-overlayfs is not used.
+- Test: writing outside the branch directory fails with EROFS or EACCES, including through symlinks, `..`, and absolute paths.
+
+The fork tools that implement parts of this (BranchFS/BranchContext, LayerFS, simgit, Waypoint, pVisor, Sandlock) are in handoff §14.1; the reasons they and the overlay and reflink alternatives were rejected are in handoff §4.
+
+1.2 Measurements
+
+Measure btrfs snapshot cost and its effect on active source operations: capture latency against file count and data size, source-write behavior during capture, and host compatibility.
+
+1.3 Host verification: btrfs on a loopback image
+
+Block-level CoW on the existing disk (verified on this host): a sparse btrfs loopback image on the existing ext4, mounted through a privileged storage container with a shared bind mount. Rootless user namespaces are blocked by AppArmor (apparmor_restrict_unprivileged_userns=1), so unshare and rootless podman cannot mount btrfs; rootful Docker can, and the user is in the docker group. Verified inside a privileged container: mkfs.btrfs on a 256 MB sparse file, mount -o loop, subvolume create and snapshot. Verified propagation to the host with --mount type=bind,source=<host dir>,target=<mount>,bind-propagation=rshared; the host then sees the directory as btrfs and can create snapshots. The runtime stays on the host; the container is only the mount provider. Caveats: the sidecar must stay alive or the mount disappears; the loop file cannot shrink easily, so size it generously; docker-group access is root-equivalent, so this is a trust boundary; keep the sidecar minimal and offline.
+
+1.4 Garbage collection
+
+GC is tree-aware (a parent's layer cannot be deleted while a child references it; delete ended leaves, archive artifacts first, compact deep chains when lookup cost grows), accounted with btrfs qgroups or compsize, and crash-safe (mark branches orphaned on startup and reclaim them).
+
+1.5 Not solved on this backend
+
+Live processes, in-memory state, warm page cache, exact mid-flight state. Add a service manifest to restart declared services; stateful services need per-branch instances or dump/restore.
+
+1.6 Tests
+
+Write in the child, fork a grandchild, read the write, and confirm the parent does not see it; change the parent after a fork and confirm the child keeps their fork-time contents while source operations continue across capture; attempt a write outside the branch directory and fail; confirm shared blocks are not duplicated, fork latency scales with file count rather than data size, cleanup leaves no residue, and nested depth and large files behave.
+
+2. Harness integration (handoff §6)
+
+2.1 OMP features
+
+Hub messaging: send, wait, inbox, list, broadcast, replyTo, await. Subagents are addressable peers; parked agents revive on a direct send; messages arrive as non-interrupting asides while running and start a turn when idle. Task subagents have filesystem isolation (task.isolation.backend: overlayfs, fuse-overlayfs, btrfs, reflink, zfs, apfs, block-clone, rcopy), batch fan-out (task.batch), parking (task.agentIdleTtlMs), and artifacts (agent://, history://).
+
+2.2 OMP copy lifecycle and access
+
+OMP has two separate copies. /fork copies the session JSONL, a new header (new id, parentSession), and the artifacts directory into a new session namespace; cwd and workspace are unchanged, and the fork persists until /drop with no automatic GC. task(isolated) creates a private workspace through pi-iso (kernel overlay with fuse-overlayfs/fusermount fallback on Linux, APFS/Btrfs/ZFS/reflink clones, ProjFS, or recursive copy); the subagent gets a fresh context, runs there, commits to a branch (omp/task/<id>) or captures <id>.patch, and the workspace is always cleaned up. Isolated agents are torn down at completion and are not revivable; the transcript stays readable via history://. Non-isolated subagents share the parent cwd and stay alive; idle agents park after task.agentIdleTtlMs (7 min default), keeping the AgentRef and session JSONL, and revive on a hub message or an Agent Hub action.
+
+The isolated workspace is private to the branch; other agents can read its output (agent://<id>), transcript (history://<id>), patch (<id>.patch), or merged branch, not the live workspace. local:// is shared across the parent and subagents. The hub roster is process-global: peers are agents in the same omp process/session tree; hub send revives a parked agent; broadcast targets visible live peers; mailboxes cap at 100 messages. Collab guests can view transcripts and control host subagents but are not peers.
+
+2.3 The lifecycle to add
+
+OMP's isolated branches are not revivable, and its revivable branches are not isolated. The combined fork needs a new lifecycle: create the session continuation, snapshot the workspace as a btrfs subvolume, retain the branch workspace, register the branch in the hub as a revivable peer, and GC on end or space pressure according to the backend's dependencies (§1.4). That is the tool to add; the rest is prompt and policy.
+
+2.4 Claude Code and the other harnesses
+
+Claude Code agent teams (experimental): per-agent mailboxes, SendMessage, ListAgents, shared task lists, and direct teammate messaging, including across machines. Unverified: the Agent tool's fork mode inherits the full conversation and the same call accepts `isolation: worktree`, which may make session fork and environment isolation one call; verify before relying on the gap. Even so, the worktree is a clean git checkout of `HEAD`, not a CoW filesystem fork: it drops uncommitted edits, untracked files, and gitignored build or environment state (`.venv`, `node_modules`, compiled artifacts) accumulated before a mid-task fork. Claude Code is the alternative if agent teams are preferred.
+
+OpenCode: subagents and child sessions; no first-class peer messaging. Codex, Gemini CLI, Cursor, Aider, and the other harnesses in plan-delivery: parent-child delegation or background tasks; no first-class peer messaging verified.
+
+3. Stage 0 and training-track details (handoff §3, §9)
+
+3.1 Prompt-search discipline
+
+The genetic prompt search reuses the discipline from the project-manager document-generation experiment: a population rather than one running best, sparse cumulative evaluation, stored evaluations never repeated, held-out cases, and the search cost counted in the budget.
+
+3.2 Candidate students and tasks
+
+Qwen2.5-Coder-0.5B-Instruct is a candidate for a cheap initial probe, with 1.5–3B alternatives. Select executable coding and repair tasks with reliable outcome checks; start with bounded tasks and expand to repository work, with ProgramBench when the system is ready for that scale.
+
+3.3 Control matching
+
+Start each run of the two-by-two from the identical student checkpoint; match processed training tokens, supervised target-token counts as closely as practical, optimizer settings, update budgets, task distributions, and evaluation resources, and disclose remaining differences.
+
+3.4 Perturbation protocol
+
+Task perturbations, where a reliable validity check exists, begin with inexpensive seeded transformations of coding tasks. Behavior-preserving variants (consistent identifier renaming, formatting, reordering independent definitions, equivalent task descriptions) are checked against the task contract, since reflection, public APIs, imports, or order-dependent execution can invalidate them. Changed-solution variants (input ranges, boundary conditions, data schemas, requirements) update reference solutions and tests together or derive expected behavior from a trusted executable specification or a checkable relation to the original; for these, unchanged output is not the desired invariant. Controlled execution perturbations, such as new evidence arriving at a checkpoint, come later and stay distinct from difficulty increases.
+
+Rules: split source tasks before creating variants and keep every original with all its variants in one split; reserve some transformation families or compositions for evaluation; version the generators, record seeds, and validate variants before comparing results; prefer deterministic transformations, and record provenance and validate independently when a model generates a variant; evaluation variants and their answers never enter trace generation, filtering, prompt search, or training; training-time augmentation is a later, separately controlled experiment. Run original/perturbed pairs across the untrained, plain-distillation, guided-loom, self-training, and self-loom conditions at matched budgets, measuring delivered correctness, the change under perturbation, cost, latency, and the fork/join decisions involved, and treat variants of one source task as related observations. Robustness differences can reveal reliance on benchmark wording or teacher-specific patterns but cannot prove or rule out distillation on their own; read them with the matched teacher-source controls and the same-model experiment.
+
+3.5 Resources and the costing placeholder
+
+Stage 0 costs are inference and runtime only: model calls, the fork backend, storage, and evaluation. The $1,000 ceiling applies to the full trial if the training track is pursued, including DeepSeek calls, rentals, storage, environments, training, and evaluation; the prompt-only stage should cost far less. Use the existing Spark for full fine-tuning and the RTX 3080 Ti and RTX 3070 as possible independent student-inference workers; confirm the Spark's configuration and the CPU RAM and disk available for forked environments. In the DeepSeek phases plan for up to ten concurrent API sessions with explicit token and spending caps and a bounded initial run; the self-bootstrap condition uses the student checkpoint for those decisions. Reserve resources for matched controls and evaluation rather than one trained condition.
+
+A costing placeholder is 25,000 examples averaging 4,000 processed tokens, 100 million training tokens per pass; AsyncThink's roughly 25,000–43,000 bootstrap pairs supplied the scale, and its later RL stage and different tasks mean it is not evidence that this task needs or will succeed with that amount. Whether 4,000 tokens is adequate for these coding tasks is doubtful: measure representative real session contexts, count repeated context processing, examples from all branches, training passes, and full-loom generation and evaluation, and recompute memory and time estimates from those measurements. Day/week/month model-size estimates are speculative until throughput is measured. Renting a larger interconnected GPU node is an option if a larger-student experiment is justified; recheck prices, availability, training memory, and total budget first. The first local run exists to establish actual throughput, cost, and a learning signal.
+
+4. VM backend (handoff §11)
+
+4.1 Memory-layer design
+
+The target is to share read-only physical pages between a child and their immediate parent, where the parent may itself be a COW layer over its own parent: a tree of layers, not a star of children over one host snapshot. A fork of a fork must see the intermediate branch's changes and share that branch's pages read-only, copying only pages written after that fork. Each fork creates a memory layer whose reads fall through to the parent layer and whose writes allocate in the child layer, so unchanged pages are shared transitively. Guest page tables are ordinary guest memory and layer like any other page; the host EPT/NPT is per-VM, the one mapping not shared, small relative to RAM, and lazily populated. Sharing EPT across VMs is not commodity. The disk uses the same layered structure (reflink or overlayfs lower layers, per-branch upper layers). Layers compose recursively and reads walk the chain, so bound the depth and compact offline.
+
+Containers do not provide this: CRIU, gVisor checkpoint/restore, and the Kubernetes container checkpoint API copy memory and restore into a new container, with no COW sharing and no cheap fork; Docker/Podman checkpoint is a migration primitive; process-level fork COWs data pages but copies page tables, and page-table COW needs kernel changes. Use microVM fork, where the guest page tables are just COW memory.
+
+4.2 Seams the runtime owns
+
+- IO policy: quiesce the session at a turn boundary, flush and drain disk writes, drop external network connections, snapshot, restore, then run the reconnect hook. Never discard dirty disk writes without flushing; drop external network, not disk or in-guest loopback.
+- Connections: loopback connections with both endpoints inside the guest survive in the snapshot; the criterion is the VM boundary, not the address family. Host port-forwards, host-mounted Unix sockets, vsock, and host-run services cross the boundary and are re-established per branch. Each branch gets a network namespace with the same addresses and ports and an egress policy; a reconnect proxy re-establishes external connections underneath.
+- Stable hostname, cwd, environment, and process tree.
+- Reseeded RNG and a defined clock policy; branches must not share entropy or assume wall-clock continuity.
+- External shared state is isolated per branch (per-branch service instances, database snapshots) or surfaced honestly, and external effects (remote APIs, git remotes) are recorded. Transparency applies inside the machine, not to the outside world.
+
+4.3 Costs and hazards
+
+Snapshot capture, not restore, dominates a fork from a running branch (full capture faults and writes all RAM; diff capture writes only dirty pages), so fork from a clean checkpoint at a tool boundary. Memory accounting must count shared pages once and charge unique pages per branch, or fan-out cost is overstated and budgets are wrong. Snapshot files contain all memory, including secrets; restrict access and encrypt at rest. Cross-host forks ship memory and disk, so keep forks on the parent's host and send only emissions across machines; CPU feature and GIC compatibility constrain restore across hosts. GPU state does not fork cleanly; keep model inference outside the forked session and fork only tool and environment state.
+
+4.4 Verification recipe for the layered property
+
+Run before committing to a backend:
+1. In the child, write a known pattern to a page that was unchanged at the child's fork, then fork a grandchild. The grandchild must read the child's pattern, not the root's. This catches re-basing that silently drops intermediate state.
+2. Measure host shared and private memory (PSS-like accounting, or COW fault counts) before and after forking N grandchildren. Pages the child never wrote must not be duplicated; the grandchild's private memory must scale with their own writes, not with the child's private set.
+3. Measure fork latency against dirty MB since the parent layer. A layered backend's grandchild fork cost scales with the child's dirty pages; a re-basing backend scales with the child's total private memory.
+4. Fork a chain at least three deep and read pages written at each level; then compact and re-read. This catches chain-depth and compaction bugs.
+
+4.5 Candidates
+
+Investigate Cloud Hypervisor, Firecracker, microsandbox, E2B, smolvm, and forkd against the recipe; the catalog classified by layering versus re-basing is in handoff §14.6. Verify cross-generation physical-memory sharing separately from filesystem reflinks or shared restores of one snapshot; mechanism descriptions alone do not establish the stronger property. Instrument fork latency versus dirty MB, fan-out, shared versus private pages, and emission bytes.
+
+4.6 Scaling
+
+Per-node fork plus emissions-only networking is the C7/C10 shape from the Omerta plans. Omerta's VM-per-task model becomes fork-per-branch if the provider exposes snapshot/restore; the Linux KVM path (Firecracker/Cloud Hypervisor) has the COW primitive, while Apple Virtualization.framework save/restore does not share memory across restores. The per-branch cost model and the requirements at a thousand branches (same-host placement, recursive layered trees, parking and eviction, admission control, hierarchical loom_status, failure handling, security, a multi-host scheduler) are in handoff §14.6.
