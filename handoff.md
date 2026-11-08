@@ -1,8 +1,8 @@
-Weft — Forking the computer
+# Weft — Forking the computer
 
 Project handoff
 
-Part I — Introduction: copies are the native affordance
+## Part I — Introduction: copies are the native affordance
 
 Humans have a single continuing existence and cannot trivially copy themselves into simultaneous continuations. That pattern casts a shadow over how we design agents. A digital agent, by contrast, can copy their working state and pursue several continuations at once. The resulting tree of existences is beyond human comprehension, much like the models themselves. But much existing work forebodes much better performance and lower cost. Best-of-N evaluations show increased performance, and fork-summarize-and-join models decrease cost, but these systems are overly constrained by a desire for control and full understanding. No work has delivered a fully transparent and trainable loom for arbitrary graphs of machine states. This project takes the bitter lesson instead: learn the organization of the tree rather than prescribe it.
 
